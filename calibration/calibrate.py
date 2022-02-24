@@ -1,4 +1,4 @@
-import numpy as np
+6import numpy as np
 import cv2 as cv
 import glob
 import os
