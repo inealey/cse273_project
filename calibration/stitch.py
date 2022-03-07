@@ -4,6 +4,8 @@ import glob
 import os
 from datetime import datetime as dt
 import matplotlib.pyplot as plt
+from math import pi, sin, cos
+from scipy.optimize import least_squares
 
 CHECKERBOARD = (6, 8)
 
@@ -22,6 +24,47 @@ images = glob.glob('raw_images/*.jpg')
 img = cv2.imread(images[-1])
 K = np.load('B036_intrintics.npy')
 D = np.load('B036_distortion.npy')
+
+
+def quaternion_rotation_matrix(Q):
+    """
+    Covert a quaternion into a full three-dimensional rotation matrix.
+
+    Input
+    :param Q: A 4 element array representing the quaternion (q0,q1,q2,q3) 
+
+    Output
+    :return: A 3x3 element matrix representing the full 3D rotation matrix. 
+             This rotation matrix converts a point in the local reference 
+             frame to a point in the global reference frame.
+    """
+    # Extract the values from Q
+    q0 = Q[0]
+    q1 = Q[1]
+    q2 = Q[2]
+    q3 = Q[3]
+
+    # First row of the rotation matrix
+    r00 = 2 * (q0 * q0 + q1 * q1) - 1
+    r01 = 2 * (q1 * q2 - q0 * q3)
+    r02 = 2 * (q1 * q3 + q0 * q2)
+
+    # Second row of the rotation matrix
+    r10 = 2 * (q1 * q2 + q0 * q3)
+    r11 = 2 * (q0 * q0 + q2 * q2) - 1
+    r12 = 2 * (q2 * q3 - q0 * q1)
+
+    # Third row of the rotation matrix
+    r20 = 2 * (q1 * q3 - q0 * q2)
+    r21 = 2 * (q2 * q3 + q0 * q1)
+    r22 = 2 * (q0 * q0 + q3 * q3) - 1
+
+    # 3x3 rotation matrix
+    rot_matrix = np.array([[r00, r01, r02],
+                           [r10, r11, r12],
+                           [r20, r21, r22]])
+
+    return rot_matrix
 
 
 def rectify(image, K, balance=1.0, scale=1.0, dim2=None, dim3=None):
@@ -121,6 +164,46 @@ def plotFeatureCorr(c1, c2, eudist=5):
     return H, new_pts
 
 
+def compute_pose(quats, H, src_center, dst_center, str):
+    # Return a 3 x 4 array, with its last column translation vector.
+    rotation = np.exp(np.array([[0., -quats[2], quats[1]], [quats[2],
+                                                            0., -quats[0]], [-quats[1], quats[0], 0.]], dtype='float32'))
+    # print(str + " rotation: ")
+    # print(rotation)
+    ptu = np.array([[src_center[0]], [src_center[1]], [1.]], dtype='float32')
+    ptv = np.array([[dst_center[0]], [dst_center[1]], [1.]], dtype='float32')
+    invK = np.linalg.inv(K)
+    translation = invK @ ptv - rotation @ invK @ ptu
+    # print(str + " translation: ")
+    # print(translation)
+    return np.concatenate([rotation, translation], 1)
+
+
+def compute_residual(poses, pairs, len1, len2, len3, len4):
+    pair1 = pairs[:, :len1]
+    pair2 = pairs[:, len1:len1+len2]
+    pair3 = pairs[:, len1+len2: len1+len2+len3]
+    pair4 = pairs[:, len1+len2+len3:]
+    pairs = [pair1, pair2, pair3, pair4]
+    errors_list = []
+    for i in range(4):
+        pose = poses[i*12:i*12+12].reshape((3, 4))
+        pair = pairs[i]
+        src_pts = pair[0]
+        dst_pts = pair[1]
+        ones = np.ones((src_pts.shape[0], 1))
+        upts = np.concatenate([src_pts, ones], 1).T
+        vpts = np.concatenate([dst_pts, ones], 1).T
+        proj_pts = K @ pose[:, :3] @ np.linalg.inv(K) @ upts + pose[:, -1:]
+        errors_list.append(vpts.T - proj_pts.T)
+        # error_norms = np.linalg.norm(proj_error_vec, axis=0)
+        # error_scalar = np.sum(error_norms)
+        # # ‘huber’ : rho(z) = z if z <= 1 else 2*z**0.5 - 1
+        # residual = residual + error_scalar if error_scalar <= 1 else residual + \
+        #     2 * error_scalar ** 0.5 - 1
+    return np.concatenate(errors_list, 0).ravel()
+
+
 SCALE = 1.1  # how "far away" to render rectified image
 
 # load images
@@ -141,95 +224,71 @@ img_east = cv2.cvtColor(rectify(img_east, K, scale=SCALE), cv2.COLOR_BGR2GRAY)
 img_west = cv2.cvtColor(rectify(img_west, K, scale=SCALE), cv2.COLOR_BGR2GRAY)
 mask = rectify(mask, K, scale=SCALE)
 
-mask_l = mask.copy()
-mask_r = mask.copy()
-# only look for SIFT points on the right half of image
-mask_l[:, :int(mask.shape[1] / 2):] = 0
-# only look for SIFT points on the left half of image
-mask_r[:, int(mask.shape[1] / 2):] = 0
-
 # find keypoints matches in two images (west --> north)
-c1, c2, d1, d2 = getSIFTMatchesPair(img_west, img_north, mask)
-_, mask = cv2.findHomography(c1, c2, cv2.RANSAC)
-matches_mask = mask.ravel().tolist()
-inliers = np.array(c2[np.bool8(matches_mask)]).reshape((-1, 1, 2))
+# north 1, west 2, south 3, east 4
+src_dstpairs = []
+fpts1, fpts2, _, _ = getSIFTMatchesPair(img_west, img_north, mask)
+src_dstpairs.append(np.array([fpts1, fpts2], dtype='float32'))
 
-H_w2n, pts_w = plotFeatureCorr(c1, c2)
-proj_ptsw = cv2.perspectiveTransform(
-    np.array(pts_w).reshape((-1, 1, 2)), H_w2n)
-inliers = np.concatenate([inliers, proj_ptsw], 0)
-cw_y, cw_x = [], []
-for i in range(len(pts_w)):
-    cw_x.append(pts_w[i][0])
-    cw_y.append(pts_w[i][1])
+H12, mask12 = cv2.findHomography(fpts1, fpts2, cv2.RANSAC)
+matches_mask = mask12.ravel().tolist()
+src_center12 = np.mean(np.array(fpts1[np.bool8(matches_mask)]), 1)
+dst_center12 = np.mean(np.array(fpts2[np.bool8(matches_mask)]), 1)
 
-c1, c2, d1, d2 = getSIFTMatchesPair(img_east, img_north, mask)
+fpts2, fpts3, _, _ = getSIFTMatchesPair(img_south, img_west, mask)
+src_dstpairs.append(np.array([fpts2, fpts3], dtype='float32'))
 
-H_e2n, pts_e = plotFeatureCorr(c1, c2)
-proj_ptse = cv2.perspectiveTransform(
-    np.array(pts_e).reshape((-1, 1, 2)), H_e2n)
-inliers = np.concatenate([inliers, proj_ptse], 0)
-ce_y, ce_x = [], []
-for i in range(len(pts_e)):
-    ce_x.append(pts_e[i][0])
-    ce_y.append(pts_e[i][1])
+H23, mask23 = cv2.findHomography(fpts2, fpts3, cv2.RANSAC)
+matches_mask = mask23.ravel().tolist()
+src_center23 = np.mean(np.array(fpts2[np.bool8(matches_mask)]), 1)
+dst_center23 = np.mean(np.array(fpts3[np.bool8(matches_mask)]), 1)
 
-c1, c2, d1, d2 = getSIFTMatchesPair(img_south, img_west, mask)
+fpts3, fpts4, _, _ = getSIFTMatchesPair(img_east, img_south, mask)
+src_dstpairs.append(np.array([fpts3, fpts4], dtype='float32'))
 
-H_s2w, pts_s = plotFeatureCorr(c1, c2)
-proj_ptss = cv2.perspectiveTransform(
-    np.array(pts_s).reshape((-1, 1, 2)), np.matmul(H_s2w, H_w2n))
-inliers = np.concatenate([inliers, proj_ptss], 0)
-cs_y, cs_x = [], []
-for i in range(len(pts_s)):
-    cs_x.append(pts_s[i][0])
-    cs_y.append(pts_s[i][1])
+H34, mask34 = cv2.findHomography(fpts3, fpts4, cv2.RANSAC)
+matches_mask = mask34.ravel().tolist()
+src_center34 = np.mean(np.array(fpts3[np.bool8(matches_mask)]), 1)
+dst_center34 = np.mean(np.array(fpts4[np.bool8(matches_mask)]), 1)
 
-# fig, ax = plt.subplots(1, 3, figsize=(12, 6))
-# ax[0].imshow(img_west, cmap='gray')
-# ax[0].scatter(cw_x, cw_y)
-# ax[1].imshow(img_east, cmap='gray')
-# ax[1].scatter(ce_x, ce_y)
-# ax[2].imshow(img_south, cmap='gray')
-# ax[2].scatter(cs_x, cs_y)
-# plt.show()
+fpts4, fpts1, _, _ = getSIFTMatchesPair(img_north, img_east, mask)
+src_dstpairs.append(np.array([fpts4, fpts1], dtype='float32'))
 
-xmin = int(inliers[np.argmin(inliers[:, 0, 0]), 0, 0])
-xmax = int(inliers[np.argmax(inliers[:, 0, 0]), 0, 0])
-ymin = int(inliers[np.argmin(inliers[:, 0, 1]), 0, 1])
-ymax = int(inliers[np.argmax(inliers[:, 0, 1]), 0, 1])
+H41, mask41 = cv2.findHomography(fpts4, fpts1, cv2.RANSAC)
+matches_mask = mask41.ravel().tolist()
+src_center41 = np.mean(np.array(fpts4[np.bool8(matches_mask)]), 1)
+dst_center41 = np.mean(np.array(fpts1[np.bool8(matches_mask)]), 1)
 
-mosaic_pts = np.float32([[0, 0], [xmax-xmin-1, 0], [0, ymax-ymin-1],
-                         [xmax-xmin-1, ymax-ymin-1]]).reshape(-1, 1, 2)
-org_pts = np.float32([[xmin, ymin], [xmax-1, ymin],
-                      [xmin, ymax-1], [xmax-1, ymax-1]]).reshape(-1, 1, 2)
-H_mosaic = cv2.getPerspectiveTransform(org_pts, mosaic_pts)
-# print("xmin: %d, xmax: %d, ymin: %d, ymax: %d" % xmin % xmax % ymin % ymax)
-np.save('H_mosaic.npy', H_mosaic)
+# # Parameters:  alpha1, beta1, theta1, x1, y1, z1, .... , -x1-x2-x3, -y1-y2-y3, -z1-z2-z3
+# start_params = [[0, pi / 2, pi / 2, 1e-3, 1e-3, 1e-3], [0, pi / 2,
+#                                                         pi / 2, 1e-3, 1e-3, 1e-3], [0, pi / 2, pi / 2, 1e-3, 1e-3, 1e-3]]
 
-panorama = np.zeros((ymax-ymin, xmax-xmin, 3), dtype=np.uint8)
+# src_pts = np.stack([np.array(fpts1, dtype='float32'), np.array(fpts2, dtype='float32'), np.array(fpts3, dtype='float32'),
+#                     np.array(fpts4, dtype='float32')], 0)
+# dst_pts = np.stack([np.array(fpts2, dtype='float32'), np.array(fpts3, dtype='float32'), np.array(fpts4, dtype='float32'),
+#                     np.array(fpts1, dtype='float32')], 0)
+# print(LM(start_params, (src_pts, dst_pts),
+#          compute_error, numerical_differentiation))
+quat12 = [-1.2790936163850642e-02,
+          -4.4008498081980789e-03, 1.5741515942940262e-02]
+quat23 = [-2.5224464582856460e-02,
+          -9.4001416479302293e-03, 1.5977324120205329e-02]
+quat34 = [-0.8131541363903213e-02,
+          - 6.4099342859026704e-03, 1.4335056192616163e-02]
+quat41 = [-2.1062899405576294e-02,
+          -1.1669480098224182e-03, 1.4846251175275622e-02]
+pose12 = compute_pose(quat12, H12, src_center12, dst_center12, "12")
+pose23 = compute_pose(quat23, H23, src_center23, dst_center23, "23")
+pose34 = compute_pose(quat34, H34, src_center34, dst_center34, "34")
+pose41 = compute_pose(quat41, H41, src_center41, dst_center41, "41")
+poses = [pose12, pose23, pose34, pose41]
 
-result = cv2.warpPerspective(
-    img_north, H_mosaic, (xmax-xmin, ymax-ymin), flags=cv2.INTER_NEAREST)
-print(result.shape)
-panorama[result != 0] = result[result != 0]
+l12 = src_dstpairs[0].shape[1]
+l23 = src_dstpairs[1].shape[1]
+l34 = src_dstpairs[2].shape[1]
+l41 = src_dstpairs[3].shape[1]
+src_dstpairs = np.concatenate(src_dstpairs, 1)
+poses = np.stack(poses, 0).reshape((48,))
 
-H_west = np.matmul(H_mosaic, H_w2n)
-result = cv2.warpPerspective(
-    img_west, H_west, (xmax-xmin, ymax-ymin), flags=cv2.INTER_NEAREST)
-panorama[result != 0] = result[result != 0]
-
-H_east = np.matmul(H_mosaic, H_e2n)
-result = cv2.warpPerspective(
-    img_east, H_east, (xmax-xmin, ymax-ymin), flags=cv2.INTER_NEAREST)
-panorama[result != 0] = result[result != 0]
-
-H_south = np.matmul(H_mosaic, np.matmul(H_s2w, H_w2n))
-result = cv2.warpPerspective(
-    img_south, H_south, (xmax-xmin, ymax-ymin), flags=cv2.INTER_NEAREST)
-panorama[result != 0] = result[result != 0]
-
-result_image = cv2.cvtColor(panorama, cv2.COLOR_BGR2RGB)
-plt.imshow(result_image)
-plt.show()
-plt.save('mosaic.png', )
+res = least_squares(compute_residual, poses, verbose=1, x_scale='jac', ftol=1e-6, method='lm',
+                    args=(src_dstpairs, l12, l23, l34, l41))
