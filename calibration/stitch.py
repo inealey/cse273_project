@@ -168,14 +168,16 @@ def compute_pose(quats, H, src_center, dst_center, str):
     # Return a 3 x 4 array, with its last column translation vector.
     rotation = np.exp(np.array([[0., -quats[2], quats[1]], [quats[2],
                                                             0., -quats[0]], [-quats[1], quats[0], 0.]], dtype='float32'))
-    # print(str + " rotation: ")
-    # print(rotation)
+    print(str + " rotation: ")
+    print(rotation)
+    # v - dst u -src 1x3
+    # v = KRK-1u + trans_vec
     ptu = np.array([[src_center[0]], [src_center[1]], [1.]], dtype='float32')
     ptv = np.array([[dst_center[0]], [dst_center[1]], [1.]], dtype='float32')
     invK = np.linalg.inv(K)
     translation = invK @ ptv - rotation @ invK @ ptu
-    # print(str + " translation: ")
-    # print(translation)
+    print(str + " translation: ")
+    print(translation)
     return np.concatenate([rotation, translation], 1)
 
 
@@ -269,14 +271,10 @@ dst_center41 = np.mean(np.array(fpts1[np.bool8(matches_mask)]), 1)
 #                     np.array(fpts1, dtype='float32')], 0)
 # print(LM(start_params, (src_pts, dst_pts),
 #          compute_error, numerical_differentiation))
-quat12 = [-1.2790936163850642e-02,
-          -4.4008498081980789e-03, 1.5741515942940262e-02]
-quat23 = [-2.5224464582856460e-02,
-          -9.4001416479302293e-03, 1.5977324120205329e-02]
-quat34 = [-0.8131541363903213e-02,
-          - 6.4099342859026704e-03, 1.4335056192616163e-02]
-quat41 = [-2.1062899405576294e-02,
-          -1.1669480098224182e-03, 1.4846251175275622e-02]
+quat12 = [-float('inf'), -float('inf'), 0.]
+quat23 = [-float('inf'), -float('inf'), 0.]
+quat34 = [-float('inf'), -float('inf'), 0.]
+quat41 = [-float('inf'), -float('inf'), 0.]
 pose12 = compute_pose(quat12, H12, src_center12, dst_center12, "12")
 pose23 = compute_pose(quat23, H23, src_center23, dst_center23, "23")
 pose34 = compute_pose(quat34, H34, src_center34, dst_center34, "34")
@@ -292,3 +290,8 @@ poses = np.stack(poses, 0).reshape((48,))
 
 res = least_squares(compute_residual, poses, verbose=1, x_scale='jac', ftol=1e-6, method='lm',
                     args=(src_dstpairs, l12, l23, l34, l41))
+
+print("Check whether the circle closes?")
+print(res.x[9:12])
+print(res.x[21:24])
+print(res.x[9:12] + res.x[21:24] + res.x[33:36] + res.x[45:48])
