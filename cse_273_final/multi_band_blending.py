@@ -37,28 +37,50 @@ def preprocess(img1, img2, overlap_w, flag_half):
         subB = np.zeros(shape)
         subB[:, w1 - overlap_w:] = img2
         mask = np.zeros(shape)
-        
+
         mask[:, :math.floor(w1 - overlap_w / 2)] = 1
 #         mask[:, :w1 - overlap_w / 2] = 1
 
     return subA, subB, mask
 
 
-def GaussianPyramid(img, leveln):
-    GP = [img]
+def ComplexPyramid(img1, img2, mask, leveln):
+    LP1 = []
+    LP2 = []
+    GP = [mask]
     for i in range(leveln - 1):
-        GP.append(cv2.pyrDown(GP[i]))
-    return GP
+        next_img1 = cv2.pyrDown(img1)
+        next_img2 = cv2.pyrDown(img2)
+        next_mask = cv2.pyrDown(mask)
+        try:
+            LP1.append(img1 - cv2.pyrUp(next_img1, img1.shape[1::-1]))
+        except:
+            h1, w1, _ = img1.shape
+            h2, w2, _ = next_img1.shape
+            if h1 != h2 * 2:
+                next_img1 = next_img1[:-1]
+                img1 = img1[:h2 * 2 - 2]
+                next_img2 = next_img2[:-1]
+                next_mask = next_mask[:-1]
+                img2 = img2[:h2 * 2 - 2]
+                mask = mask[:h2 * 2 - 2]
+            if w1 != w2 * 2:
+                next_img1 = next_img1[:, :-1]
+                img1 = img1[:, :w2 * 2 - 2]
+                next_img2 = next_img2[:, :-1]
+                next_mask = next_mask[:, :-1]
+                img2 = img2[:, :w2 * 2 - 2]
+                mask = mask[:, :w2 * 2 - 2]
+            LP1.append(img1 - cv2.pyrUp(next_img1, img1.shape[1::-1]))
+        LP2.append(img2 - cv2.pyrUp(next_img2, img2.shape[1::-1]))
 
+        GP.append(next_mask)
+        img1 = next_img1
+        img2 = next_img2
 
-def LaplacianPyramid(img, leveln):
-    LP = []
-    for i in range(leveln - 1):
-        next_img = cv2.pyrDown(img)
-        LP.append(img - cv2.pyrUp(next_img, img.shape[1::-1]))
-        img = next_img
-    LP.append(img)
-    return LP
+    LP1.append(img1)
+    LP2.append(img2)
+    return LP1, LP2, GP
 
 
 def blend_pyramid(LPA, LPB, MP):
@@ -92,9 +114,7 @@ def multi_band_blending(img1, img2, overlap_w, leveln=None, flag_half=False):
         leveln = max_leveln
 
     # Get Gaussian pyramid and Laplacian pyramid
-    MP = GaussianPyramid(mask, leveln)
-    LPA = LaplacianPyramid(subA, leveln)
-    LPB = LaplacianPyramid(subB, leveln)
+    LPA, LPB, MP = ComplexPyramid(subA, subB, mask, leveln)
 
     # Blend two Laplacian pyramidspass
     blended = blend_pyramid(LPA, LPB, MP)
@@ -114,11 +134,11 @@ if __name__ == '__main__':
     ap.add_argument('-H', '--half', required=False, action='store_true',
                     help="option to blend the left half of the first image \
                           and the right half of the second image")
-    ap.add_argument('-f', '--first', required=True,
+    ap.add_argument('-f', '--first', default='cylinder_overlap_300_0.png',
                     help="path to the first (left) image")
-    ap.add_argument('-s', '--second', required=True,
+    ap.add_argument('-s', '--second', default='cylinder_overlap_300_1.png',
                     help="path to the second (right) image")
-    ap.add_argument('-o', '--overlap', required=True, type=int,
+    ap.add_argument('-o', '--overlap', default=10, type=int,
                     help="width of the overlapped area between two images, \
                           even number recommended")
     ap.add_argument('-l', '--leveln', required=False, type=int,
