@@ -41,6 +41,10 @@ def getSIFTMatchesPair(img1, img2, maskL, maskR):
         descriptors1: feature descriptors (image1) for each matched feature in corners1
         descriptors2: ^ likewise for image 2, corners 2
     """
+    ### convert to grayscale
+    img1 = cv2.cvtColor(img1.copy(), cv2.COLOR_BGRA2GRAY)
+    img2 = cv2.cvtColor(img2.copy(), cv2.COLOR_BGRA2GRAY)
+    
     ## init sift object
     sift = cv2.SIFT_create()
     corners1, corners2, descriptors1, descriptors2 = [], [], [], []
@@ -69,7 +73,7 @@ def getSIFTMatchesPair(img1, img2, maskL, maskR):
     descriptors1 = np.array(descriptors1, dtype=np.float32)
     descriptors2 = np.array(descriptors2, dtype=np.float32)
     
-    return corners1, corners2, descriptors1, descriptors2
+    return corners1, corners2, descriptors1, descriptors2, matches
 
 
 def plotFeatures(img, features):
@@ -126,6 +130,8 @@ def cylindricalWarp(img, K):
     # make sure warp coords only within image bounds
     B[(B[:,0] < 0) | (B[:,0] >= w_) | (B[:,1] < 0) | (B[:,1] >= h_)] = -1
     B = B.reshape(h_,w_,-1)
+    
+#     return cv2.remap(img, B[:,:,0].astype(np.float32), B[:,:,1].astype(np.float32), cv2.INTER_AREA, borderMode=cv2.BORDER_CONSTANT)
     
     img_rgba = cv2.cvtColor(img,cv2.COLOR_BGR2BGRA) # for transparent borders...
     # warp the image according to cylindrical coords
